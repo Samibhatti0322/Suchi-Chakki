@@ -10,6 +10,7 @@ import { API_BASE_URL } from './config';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { safeGetStorage } from './utils/projectProtection';
 import { PWAInstallPrompt } from './components/common/PWAInstallPrompt';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 // Importing all layouts
 const CustomerLayout = lazy(() => import('./layouts/CustomerLayout'));
@@ -397,6 +398,7 @@ export default function App() {
             <Toaster />
           </CartProvider>
         </AuthProvider>
+        <SpeedInsights />
         </BrowserRouter>
       </ErrorBoundary>
     </HelmetProvider>
