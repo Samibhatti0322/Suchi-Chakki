@@ -66,8 +66,10 @@ export function UserAccount() {
       loadProfile();
       fetchOrders(); 
       fetchRentals();
+    } else if (!localStorage.getItem('token')) {
+      navigate('/login/customer', { replace: true });
     }
-  }, [user]);
+  }, [user, navigate]);
 
   const loadProfile = () => {
     if (user) {
