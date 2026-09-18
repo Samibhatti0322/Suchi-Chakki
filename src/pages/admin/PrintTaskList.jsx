@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import { Button } from '../../components/common/button';
 import { Printer, X } from 'lucide-react';
 import { API_BASE_URL } from '../../config';
+import { printWindowHtml } from '../../utils/printHelpers';
 
 const formatDate = (date) =>
   new Date(date).toLocaleDateString('en-GB') + ' ' + new Date(date).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -29,7 +30,7 @@ const LogoSVG = ({ size = 48 }) => (
   </svg>
 );
 
-export function PrintTaskList({ orders, title, open, onClose }) {
+export function PrintTaskList({ orders = [], title = "TOMORROW'S TASK LIST", open = false, onClose = () => {} }) {
 
   const [storeSettings, setStoreSettings] = useState({ name: "SUCHI CHAKKI", address: "", phone: "", tagline: "", logo: "" });
 
@@ -53,15 +54,7 @@ export function PrintTaskList({ orders, title, open, onClose }) {
   }, [open]);
 
   const handlePrint = () => {
-    const printWin = window.open('', '_blank', 'width=800,height=900');
-    printWin.document.open();
-    printWin.document.write(buildPrintHTML());
-    printWin.document.close();
-    printWin.focus();
-    setTimeout(() => {
-      printWin.print();
-      printWin.close();
-    }, 400);
+    printWindowHtml(buildPrintHTML(), { autoClose: true });
   };
   
   const confirmedTotalRevenue = orders
@@ -230,7 +223,7 @@ export function PrintTaskList({ orders, title, open, onClose }) {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {storeSettings.logo ? (
-                <img src={storeSettings.logo} alt="" className="rounded-full object-cover shrink-0" style={{ width: 40, height: 40 }} />
+                <img src={storeSettings.logo} alt="" className="store-logo-tasklist" />
               ) : (
                 <LogoSVG size={40} />
               )}
@@ -246,14 +239,14 @@ export function PrintTaskList({ orders, title, open, onClose }) {
         </DialogHeader>
 
         {/* Scrollable Preview */}
-        <div className="overflow-y-auto bg-stone-50" style={{ maxHeight: '70vh' }}>
+        <div className="bg-stone-50 scroll-modal-tall">
           <div className="p-4 sm:p-6 lg:p-8">
             <div id="printable-list" className="font-mono text-sm space-y-6 bg-white text-black p-6 sm:p-8 rounded-xl shadow-md border border-stone-300 max-w-3xl mx-auto">
               {/* HEADER */}
           <div className="text-center border-b-2 border-dashed border-black pb-4">
             <div className="flex justify-center mb-2">
               {storeSettings.logo ? (
-                <img src={storeSettings.logo} alt="" className="rounded-full object-cover shrink-0" style={{ width: 56, height: 56 }} />
+                <img src={storeSettings.logo} alt="" className="store-logo-tasklist-lg" />
               ) : (
                 <LogoSVG size={56} />
               )}

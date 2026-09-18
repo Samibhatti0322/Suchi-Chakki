@@ -19,7 +19,7 @@ const AdminLayout = lazy(() => import('./layouts/AdminLayout'));
 // Lazy loading all pages for better performance
 // Customer side pages
 const Homepage = lazy(() => import('./pages/customer/Homepage').then(module => ({ default: module.Homepage })));
-const Checkout = lazy(() => import('./pages/customer/Checkout').then(module => ({ default: module.Checkout })));
+const Checkout = lazy(() => import('./pages/customer/Checkout').then(module => ({ default: module.Checkout || module.default })));
 const OrderConfirmation = lazy(() => import('./pages/customer/OrderConfirmation').then(module => ({ default: module.OrderConfirmation })));
 const TrackOrder = lazy(() => import('./pages/customer/TrackOrder').then(module => ({ default: module.TrackOrder })));
 const Contact = lazy(() => import('./pages/customer/Contact').then(module => ({ default: module.Contact })));
@@ -28,8 +28,6 @@ const UserAccount = lazy(() => import('./pages/customer/UserAccount').then(modul
 const LiveTrackingPage = lazy(() => import('./pages/customer/LiveTrackingPage').then(module => ({ default: module.LiveTrackingPage })));
 
 // Authentication pages
-const AdminLogin = lazy(() => import('./pages/auth/AdminLogin').then(module => ({ default: module.AdminLogin })));
-const DeliveryLogin = lazy(() => import('./pages/auth/DeliveryLogin').then(module => ({ default: module.DeliveryLogin })));
 const CustomerLogin = lazy(() => import('./pages/auth/CustomerLogin').then(module => ({ default: module.CustomerLogin })));
 const CustomerSignUp = lazy(() => import('./pages/auth/CustomerSignUp').then(module => ({ default: module.CustomerSignUp })));
 const ForgotPassword = lazy(() => import('./pages/auth/ForgotPassword').then(module => ({ default: module.ForgotPassword })));
@@ -38,14 +36,14 @@ const ForgotPassword = lazy(() => import('./pages/auth/ForgotPassword').then(mod
 const DeliveryPanel = lazy(() => import('./pages/delivery/DeliveryPanel').then(module => ({ default: module.DeliveryPanel })));
 
 // Admin dashboard pages
-const Dashboard = lazy(() => import('./pages/admin/Dashboard').then(module => ({ default: module.Dashboard })));
+const Dashboard = lazy(() => import('./pages/admin/Dashboard').then(module => ({ default: module.Dashboard || module.default })));
 const TodaysWork = lazy(() => import('./pages/admin/TodaysWork').then(module => ({ default: module.TodaysWork })));
 const TomorrowsList = lazy(() => import('./pages/admin/TomorrowsList').then(module => ({ default: module.TomorrowsList })));
 const ReadyOrders = lazy(() => import('./pages/admin/ReadyOrders').then(module => ({ default: module.ReadyOrders })));
 const PickupRequests = lazy(() => import('./pages/admin/PickupRequests').then(module => ({ default: module.PickupRequests })));
 const CompletedOrders = lazy(() => import('./pages/admin/CompletedOrders').then(module => ({ default: module.CompletedOrders })));
 const OrdersRecord = lazy(() => import('./pages/admin/OrdersRecord').then(module => ({ default: module.OrdersRecord })));
-const InventoryManagement = lazy(() => import('./pages/admin/InventoryManagement').then(module => ({ default: module.InventoryManagement })));
+const InventoryManagement = lazy(() => import('./pages/admin/InventoryManagement').then(module => ({ default: module.InventoryManagement || module.default })));
 const ManageCategories = lazy(() => import('./pages/admin/ManageCategories').then(module => ({ default: module.ManageCategories })));
 const ManageServices = lazy(() => import('./pages/admin/ManageServices').then(module => ({ default: module.ManageServices })));
 const ManageCoupons = lazy(() => import('./pages/admin/ManageCoupons').then(module => ({ default: module.ManageCoupons })));
@@ -73,10 +71,12 @@ function ProtectedAdminRoute({ children }) {
   const storedUser = user || safeGetStorage('user', null);
   const storedToken = localStorage.getItem('token');
 
-  if (!storedUser) console.warn("ProtectedRoute: No user found.");
-  else if (storedUser.role && storedUser.role.toLowerCase() !== 'admin') console.warn(`ProtectedRoute: Role mismatch. Expected 'admin', got '${storedUser.role}'`);
+  if (!storedUser || !storedToken) {
+    return <Navigate to="/login/customer" state={{ from: location }} replace />;
+  }
 
-  if (!storedUser || !storedToken || (storedUser.role && storedUser.role.toLowerCase() !== 'admin')) {
+  const role = storedUser.role ? storedUser.role.toLowerCase() : '';
+  if (role !== 'admin') {
     return <Navigate to="/" replace />;
   }
   
@@ -89,9 +89,14 @@ function ProtectedDeliveryRoute({ children }) {
   const location = useLocation();
 
   const storedUser = user || safeGetStorage('user', null);
+  const storedToken = localStorage.getItem('token');
 
-  const role = storedUser?.role ? storedUser.role.toLowerCase() : '';
-  if (!storedUser || (role !== 'delivery' && role !== 'delivery_boy' && role !== 'admin')) {
+  if (!storedUser || !storedToken) {
+    return <Navigate to="/login/customer" state={{ from: location }} replace />;
+  }
+
+  const role = storedUser.role ? storedUser.role.toLowerCase() : '';
+  if (role !== 'delivery' && role !== 'delivery_boy' && role !== 'admin') {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;
@@ -111,12 +116,19 @@ function ProtectedCustomerRoute({ children }) {
 }
 
 // Guest route to prevent logged in users from visiting login page again
-function GuestRoute({ children, role, redirectTo }) {
+function GuestRoute({ children }) {
   const { user } = useAuth();
   const storedUser = user || safeGetStorage('user', null);
 
-  if (storedUser && storedUser.role && storedUser.role.toLowerCase() === role) {
-    return <Navigate to={redirectTo} replace />;
+  if (storedUser) {
+    const role = storedUser.role ? storedUser.role.toLowerCase() : '';
+    if (role === 'admin') {
+      return <Navigate to="/admin/dashboard" replace />;
+    }
+    if (role === 'delivery' || role === 'delivery_boy') {
+      return <Navigate to="/delivery" replace />;
+    }
+    return <Navigate to="/" replace />;
   }
   return <>{children}</>;
 }
@@ -140,9 +152,8 @@ const routeTitles = {
   '/contact': 'Contact Us',
   '/reviews': 'Reviews',
   '/account': 'My Account',
-  '/login/customer': 'Customer Login',
-  '/login/admin': 'Admin Login',
-  '/login/delivery': 'Delivery Login',
+  '/login': 'Login',
+  '/login/customer': 'Login',
   '/signup/customer': 'Sign Up',
   '/forgot-password': 'Forgot Password',
   '/delivery': 'Delivery Panel',
@@ -349,10 +360,11 @@ export default function App() {
             <Suspense fallback={<PageLoader />}>
               <Routes>
               {/* Authentication Routes */}
-              <Route path="/login/admin" element={<Navigate to="/" replace />} />
-              <Route path="/login/delivery" element={<Navigate to="/" replace />} />
-              <Route path="/login/customer" element={<GuestRoute role="customer" redirectTo="/"><Suspense fallback={<PageLoader />}><CustomerLogin /></Suspense></GuestRoute>} />
-              <Route path="/signup/customer" element={<GuestRoute role="customer" redirectTo="/"><Suspense fallback={<PageLoader />}><CustomerSignUp /></Suspense></GuestRoute>} />
+              <Route path="/login" element={<Navigate to="/login/customer" replace />} />
+              <Route path="/login/admin" element={<Navigate to="/login/customer" replace />} />
+              <Route path="/login/delivery" element={<Navigate to="/login/customer" replace />} />
+              <Route path="/login/customer" element={<GuestRoute><Suspense fallback={<PageLoader />}><CustomerLogin /></Suspense></GuestRoute>} />
+              <Route path="/signup/customer" element={<GuestRoute><Suspense fallback={<PageLoader />}><CustomerSignUp /></Suspense></GuestRoute>} />
               <Route path="/forgot-password" element={<Suspense fallback={<PageLoader />}><ForgotPassword /></Suspense>} />
 
               {/* Customer Routes */}

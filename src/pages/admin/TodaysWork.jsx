@@ -9,6 +9,7 @@ import { API_BASE_URL } from '../../config';
 import { downloadBillPDF } from '../../utils/billPdfUtils';
 import { deductFromInventory } from '../../utils/inventoryUtils';
 import { PrintSlip } from './PrintSlip';
+import { sendWhatsAppMessage } from '../../utils/whatsappHelper';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +36,12 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from '../../components/common/tooltip';
+import { WhatsAppReadyModal } from "../../components/features/admin/todaysWork/WhatsAppReadyModal";
+import { CancelOrderModal } from "../../components/features/admin/todaysWork/CancelOrderModal";
+import { SplitOrderModal } from "../../components/features/admin/todaysWork/SplitOrderModal";
+import { PreparedOrderCard } from "../../components/features/admin/todaysWork/PreparedOrderCard";
+import { OrderProcessCard } from "../../components/features/admin/todaysWork/OrderProcessCard";
+import { useCancelOrder } from "../../hooks/useCancelOrder";
 
 export function TodaysWork() {
   const { t } = useTranslation();
@@ -45,30 +52,48 @@ export function TodaysWork() {
   const [overriding, setOverriding] = useState(null);
   const [capacity, setCapacity] = useState(null);
   const [activePersonnel, setActivePersonnel] = useState([]);
-  const [cancelOrder, setCancelOrder] = useState(null);
-  const [cancelReason, setCancelReason] = useState('');
-  const [isCancelling, setIsCancelling] = useState(false);
+
+  const {
+    cancelOrder,
+    setCancelOrder,
+    cancelReason,
+    setCancelReason,
+    isCancelling,
+    handleCancelOrder,
+  } = useCancelOrder({ onSuccess: () => fetchOrders(), cancelledBy: 'Admin' });
 
   const [splitOrder, setSplitOrder] = useState(null);
   const [splitBatches, setSplitBatches] = useState([]);
   const [isSplitting, setIsSplitting] = useState(false);
-  const [heavyThreshold, setHeavyThreshold] = useState(100);
+  const [heavyThreshold, setHeavyThreshold] = useState(15);
   const [storeName, setStoreName] = useState('Suchi Chakki');
   const [whatsappReadyModal, setWhatsappReadyModal] = useState(null);
 
-  const processingOrders = orders.filter(order =>
+  const sortByFIFO = (list) => {
+    return [...list].sort((a, b) => {
+      const timeA = new Date(a.created_at || a.createdAt || 0).getTime();
+      const timeB = new Date(b.created_at || b.createdAt || 0).getTime();
+      if (timeA !== timeB) return timeA - timeB; // Earliest created first
+      return (parseInt(a.id, 10) || 0) - (parseInt(b.id, 10) || 0); // Earliest ID first
+    });
+  };
+
+  const processingOrders = sortByFIFO(orders.filter(order =>
     (order.items || []).some(item => {
       const unit = (item.unit || '').toLowerCase().trim();
       return unit === 'kg' || unit === 'g' || unit === 'trip';
     })
-  );
+  ));
 
-  const preparedOrders = orders.filter(order =>
+  const preparedOrders = sortByFIFO(orders.filter(order =>
     !(order.items || []).some(item => {
       const unit = (item.unit || '').toLowerCase().trim();
       return unit === 'kg' || unit === 'g' || unit === 'trip';
     })
-  );
+  ));
+
+  const carriedForwardOrders = sortByFIFO(processingOrders.filter(o => o.is_carried_forward));
+  const todayNewOrders = sortByFIFO(processingOrders.filter(o => !o.is_carried_forward));
 
   const totalWeight = processingOrders.reduce((sum, order) => sum + parseFloat(order.total_weight_kg || 0), 0);
   const totalProcessingMinutes = processingOrders.reduce((sum, order) => sum + parseInt(order.processing_time_minutes || 0), 0);
@@ -92,7 +117,7 @@ export function TodaysWork() {
       const data = await res.json();
       if (data.success) {
         if (data.settings?.heavyOrderThreshold) {
-          setHeavyThreshold(parseFloat(data.settings.heavyOrderThreshold) || 100);
+          setHeavyThreshold(parseFloat(data.settings.heavyOrderThreshold) || 15);
         }
         if (data.settings?.organizationName || data.settings?.storeName) {
           setStoreName(data.settings.organizationName || data.settings.storeName);
@@ -110,7 +135,7 @@ export function TodaysWork() {
       const data = await response.json();
       
       if (data.success) {
-        setOrders((data.orders || []).map(order => ({
+        const mappedOrders = (data.orders || []).map(order => ({
           ...order,
           // Use DB order_type or shipping_address keywords — 'pickup' = store pickup, 'delivery' = home delivery
           type: (order.order_type === 'pickup' || (order.shipping_address && (
@@ -121,7 +146,8 @@ export function TodaysWork() {
             order.shipping_address.toLowerCase().includes('shop')
           ))) ? 'pickup' : 'delivery',
           deliveryPersonnel: order.deliveryPersonnel || order.driver_name || null,
-        })));
+        }));
+        setOrders(sortByFIFO(mappedOrders));
         if (data.capacity) setCapacity(data.capacity);
       } else {
         console.error("Failed to load orders");
@@ -174,15 +200,8 @@ export function TodaysWork() {
               if (found && found.phone) targetPhone = found.phone;
             }
             if (targetPhone) {
-              let cleanPhone = String(targetPhone).replace(/\D/g, '');
-              if (cleanPhone.startsWith('0')) {
-                cleanPhone = '92' + cleanPhone.slice(1);
-              } else if (cleanPhone.length === 10 && !cleanPhone.startsWith('92')) {
-                cleanPhone = '92' + cleanPhone;
-              }
               const message = `Assalam-o-Alaikum *${personnelName}*! 👋\n\nApko Suchi Chakki ki taraf se nayi Pickup Request assign hui hai:\n📦 *Pickup Request #${orderId}*\n\nBara-e-meherbani Delivery Portal check karein aur waqt par mukammal karein.\nShukriya!`;
-              const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
-              window.open(whatsappUrl, '_blank');
+              sendWhatsAppMessage(targetPhone, message);
             }
           } else {
             toast.success(`Driver ${personnelName} pre-assigned! Will be dispatched to portal once Ready.`);
@@ -195,38 +214,6 @@ export function TodaysWork() {
     } catch (error) {
       toast.error('Network error while assigning driver');
       fetchOrders();
-    }
-  };
-
-  const handleCancelOrder = async () => {
-    if (!cancelOrder) return;
-
-    setIsCancelling(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/cancel_order.php`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          order_id: cancelOrder.id,
-          reason: cancelReason || 'No reason provided',
-          cancelled_by: 'Admin'
-        })
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        toast.success('Order cancelled successfully');
-        fetchOrders();
-      } else {
-        toast.error(result.message || 'Failed to cancel order');
-      }
-    } catch (error) {
-      toast.error('Network error while cancelling order');
-    } finally {
-      setIsCancelling(false);
-      setCancelOrder(null);
-      setCancelReason('');
     }
   };
 
@@ -372,9 +359,13 @@ export function TodaysWork() {
 
     setIsSplitting(true);
     try {
+      const token = localStorage.getItem('token') || localStorage.getItem('admin_token') || '';
       const response = await fetch(`${API_BASE_URL}/split_order_batch.php`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({
           order_id: splitOrder.id,
           batches: validBatches
@@ -395,25 +386,37 @@ export function TodaysWork() {
     }
   };
 
-  // Safe external URL opener (dispatches real click to bypass browser popup blockers)
-  const openWhatsAppSafely = (url) => {
-    if (!url) return;
+  // Safe external URL opener (returns true if opened, false if blocked by browser)
+  const openWhatsAppSafely = (url, forceAnchor = false) => {
+    if (!url) return false;
     try {
-      const a = document.createElement('a');
-      a.href = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        if (document.body.contains(a)) {
-          document.body.removeChild(a);
-        }
-      }, 300);
+      const newWin = window.open(url, '_blank');
+      if (newWin && !newWin.closed && typeof newWin.closed !== 'undefined') {
+        return true;
+      }
     } catch (err) {
-      console.warn("Failed to trigger anchor click, fallback to window.open", err);
-      window.open(url, '_blank');
+      console.warn("window.open blocked or failed:", err);
     }
+
+    if (forceAnchor) {
+      try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          if (document.body.contains(a)) {
+            document.body.removeChild(a);
+          }
+        }, 300);
+        return true;
+      } catch (err) {
+        console.warn("Failed to trigger anchor click", err);
+      }
+    }
+    return false;
   };
 
   // whatsapp message and details generator
@@ -559,27 +562,29 @@ Suchi Chakki — Pure & Fresh Processing
           }
         }
 
-        // 3. Prepare PDF Object
-        const totalAmount = parseFloat(order.total_amount || order.total) || 0;
-        const amountPaid = parseFloat(order.amount_paid || order.advancePayment) || 0;
+        // 3. Prepare PDF Object (Use full parent order if this was a split batch)
+        const billSource = (order.is_split_batch && order.parent_order) ? order.parent_order : order;
+        const totalAmount = parseFloat(billSource.total_amount || billSource.total) || 0;
+        const amountPaid = parseFloat(billSource.amount_paid || billSource.advancePayment) || 0;
         const pdfOrder = {
-          id: String(order.id),
-          customerName: order.customer_name || order.customerName || order.full_name || 'Walk-in Customer',
-          phone: order.customer_phone || order.phone || '',
+          id: String(billSource.id),
+          customerName: billSource.customer_name || billSource.customerName || billSource.full_name || 'Walk-in Customer',
+          phone: billSource.customer_phone || billSource.phone || '',
           total: totalAmount,
+          status: 'ready',
           advancePayment: amountPaid,
-          type: order.type === 'pickup' ? 'pickup' : 'delivery',
-          deliveryAddress: order.shipping_address || order.deliveryAddress || '',
-          paymentMethod: order.payment_method || order.paymentMethod || 'cash',
+          type: (billSource.type === 'pickup' || billSource.order_type === 'pickup') ? 'pickup' : 'delivery',
+          deliveryAddress: billSource.shipping_address || billSource.deliveryAddress || '',
+          paymentMethod: billSource.payment_method || billSource.paymentMethod || 'cash',
           paymentStatus: (amountPaid >= totalAmount && totalAmount > 0) ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending'),
-          couponCode: order.coupon_code || '',
-          couponDiscount: parseFloat(order.coupon_discount || 0),
-          createdAt: order.created_at || order.createdAt || new Date().toISOString(),
-          items: (order.items || []).map(item => ({
+          couponCode: billSource.coupon_code || '',
+          couponDiscount: parseFloat(billSource.coupon_discount || 0),
+          createdAt: billSource.created_at || billSource.createdAt || new Date().toISOString(),
+          items: (billSource.items || []).map(item => ({
             quantity: item.quantity || 1,
             isWeightPending: false,
             service: {
-              name: item.name || item.service?.name || 'Product',
+              name: item.name || item.service?.name || item.prod_name || 'Product',
               price: parseFloat(item.price_at_purchase || item.price || item.service?.price) || 0,
               unit: item.unit || item.service?.unit || 'kg'
             }
@@ -598,22 +603,26 @@ Suchi Chakki — Pure & Fresh Processing
         setOrders(prev => prev.filter(o => o.id !== order.id));
         toast.success(`Order #${order.id} is marked as Ready!`);
 
-        // 6. Generate WhatsApp message & prompt
+        // 6. Generate WhatsApp message & prompt (using full billSource)
         try {
-          const waDetails = generateWhatsAppDetails(order);
+          const waDetails = generateWhatsAppDetails(billSource);
           if (waDetails && waDetails.url) {
-            // Attempt direct open
-            openWhatsAppSafely(waDetails.url);
+            // Check if browser automatically opens WhatsApp
+            const autoOpened = openWhatsAppSafely(waDetails.url);
 
-            // Also open dedicated dialog for instant 1-click fallback & message copy
-            setWhatsappReadyModal(waDetails);
-
-            toast.info(`📱 WhatsApp message ready for ${waDetails.customerName}`, {
-              action: {
-                label: 'Open WhatsApp',
-                onClick: () => openWhatsAppSafely(waDetails.url)
-              }
-            });
+            if (!autoOpened) {
+              // Sirf tab dialog box khulega jab browser me WhatsApp auto na khula ho
+              setWhatsappReadyModal(waDetails);
+            } else {
+              // Agar browser me auto khul gaya to dialog box nahi khulega (dono aik sath nahi chalenge)
+              setWhatsappReadyModal(null);
+              toast.info(`📱 WhatsApp opened for ${waDetails.customerName}`, {
+                action: {
+                  label: 'Re-open',
+                  onClick: () => openWhatsAppSafely(waDetails.url, true)
+                }
+              });
+            }
           }
         } catch (waErr) {
           console.warn("WhatsApp link warning:", waErr);
@@ -630,10 +639,11 @@ Suchi Chakki — Pure & Fresh Processing
   };
 
   const handlePrint = (order) => {
-    const totalAmount = parseFloat(order.total_amount) || 0;
-    const amountPaid = parseFloat(order.amount_paid) || 0;
+    const printSource = (order.is_split_batch && order.parent_order) ? order.parent_order : order;
+    const totalAmount = parseFloat(printSource.total_amount || printSource.total) || 0;
+    const amountPaid = parseFloat(printSource.amount_paid || printSource.advancePayment) || 0;
     
-    let paymentStatus = order.payment_status || 'pending';
+    let paymentStatus = printSource.payment_status || 'pending';
     if (paymentStatus === 'paid' || amountPaid >= totalAmount) {
       paymentStatus = 'paid';
     } else if (amountPaid > 0) {
@@ -641,30 +651,30 @@ Suchi Chakki — Pure & Fresh Processing
     }
 
     const transformedOrder = {
-      id: order.id.toString(),
-      customerName: order.customer_name || order.full_name || 'Walk-in Customer',
-      phone: order.customer_phone || order.phone || '',
+      id: printSource.id.toString(),
+      customerName: printSource.customer_name || printSource.full_name || 'Walk-in Customer',
+      phone: printSource.customer_phone || printSource.phone || '',
       total: totalAmount,
-      status: order.status,
-      createdAt: order.created_at,
-      paymentMethod: order.payment_method || 'cod',
+      status: printSource.status || 'ready',
+      createdAt: printSource.created_at,
+      paymentMethod: printSource.payment_method || 'cod',
       paymentStatus: paymentStatus,
       advancePayment: amountPaid,
-      type: order.type === 'pickup' ? 'pickup' : 'delivery',
-      source: (order.user_id === '1' || !order.user_id) ? 'manual' : 'online',
-      deliveryPersonnel: order.driver_name || null,
-      deliveryAddress: order.shipping_address,
-      deliveryFee: parseFloat(order.delivery_fee || order.deliveryFee || order.shipping_cost || 0),
+      type: (printSource.type === 'pickup' || printSource.order_type === 'pickup') ? 'pickup' : 'delivery',
+      source: (printSource.user_id === '1' || !printSource.user_id) ? 'manual' : 'online',
+      deliveryPersonnel: printSource.driver_name || null,
+      deliveryAddress: printSource.shipping_address,
+      deliveryFee: parseFloat(printSource.delivery_fee || printSource.deliveryFee || printSource.shipping_cost || 0),
       cancellationReason: null,
       cancelledBy: null,
-      couponCode: order.coupon_code || '',
-      couponDiscount: parseFloat(order.coupon_discount || 0),
-      items: order.items ? order.items.map(item => ({
+      couponCode: printSource.coupon_code || '',
+      couponDiscount: parseFloat(printSource.coupon_discount || 0),
+      items: printSource.items ? printSource.items.map(item => ({
         quantity: item.quantity,
         isWeightPending: false,
         price_at_purchase: item.price_at_purchase || 0,
-        name: item.name,
-        service: { name: item.name, price: item.price_at_purchase || 0 }
+        name: item.name || item.service?.name || item.prod_name,
+        service: { name: item.name || item.service?.name || item.prod_name, price: item.price_at_purchase || 0 }
       })) : []
     };
     setPrintOrder(transformedOrder);
@@ -762,7 +772,7 @@ Suchi Chakki — Pure & Fresh Processing
     printContainer.id = 'print-all-work-container';
 
     const todayStr = new Date().toLocaleString();
-    const sortedOrders = [...orders].sort((a, b) => (parseInt(a.queue_position) || 999) - (parseInt(b.queue_position) || 999));
+    const sortedOrders = sortByFIFO(orders);
 
     const grindJobsCount = processingOrders.length;
     const preparedJobsCount = preparedOrders.length;
@@ -880,489 +890,11 @@ Suchi Chakki — Pure & Fresh Processing
     return `${hrs}h ${remainMins}m`;
   };
 
-  // OrderCard inner component
-  const OrderCard = ({ order }) => {
-    const isOverdue = order.estimated_completion_time ? new Date(order.estimated_completion_time) < new Date() : false;
-    const isSplitBatch = order.is_split_batch === true;
-    const allSiblingsReady = order.all_siblings_ready === true;
-    // If this is a split batch, Mark as Ready is only allowed when ALL siblings are ready
-    const canMarkReady = !isSplitBatch || allSiblingsReady;
-    const isHeavy = parseFloat(order.total_weight_kg || 0) > heavyThreshold;
-
-    return (
-    <Card className={`border-l-[6px] shadow-lg hover:shadow-xl transition-all border-t border-r border-b rounded-xl bg-white ${
-      isOverdue 
-        ? 'border-l-red-600 animate-glow-red relative z-10'
-        : isSplitBatch
-          ? 'border-l-purple-500'
-          : order.is_carried_forward
-            ? 'border-l-orange-500'
-            : order.is_manually_overridden === '1' || order.is_manually_overridden === 1
-              ? 'border-l-amber-500'
-              : 'border-l-blue-600'
-    }`}>
-      <CardHeader className={`pb-2 rounded-t-xl mb-3 sm:mb-4 px-3 sm:px-6 pt-3 sm:pt-6 ${isOverdue ? 'bg-red-50/50' : order.is_carried_forward ? 'bg-orange-50/60' : 'bg-slate-50/50'}`}>
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
-          <div className="min-w-0">
-            <CardTitle className="text-lg sm:text-2xl font-bold flex items-center gap-2 flex-wrap">
-              Order #{order.id}
-              {isSplitBatch && (
-                <Badge className="bg-purple-100 text-purple-800 border-purple-300 text-[10px] px-2 py-0.5 font-bold">
-                  <SplitSquareHorizontal className="h-3 w-3 mr-1" />
-                  BATCH {order.batch_index} OF {order.siblings?.length || '?'}
-                </Badge>
-              )}
-              {order.is_carried_forward && (
-                <Badge className="bg-orange-100 text-orange-800 border-orange-300 text-[10px] px-2 py-0.5 font-bold">
-                  <History className="h-3 w-3 mr-1" /> CARRIED FORWARD
-                </Badge>
-              )}
-            </CardTitle>
-            <p className="text-xs sm:text-sm font-medium text-muted-foreground mt-1.5 sm:mt-2 flex items-center gap-2">
-              <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-              <span className="break-words">Created: {new Date(order.created_at).toLocaleString()}</span>
-            </p>
-          </div>
-          <div className="sm:text-right bg-blue-50/80 px-3 py-2 rounded-lg self-stretch sm:self-auto">
-            <div className="flex flex-col items-start sm:items-end">
-              <span className="text-base sm:text-xl font-bold text-slate-800 break-all">
-                Rs. {parseInt((parseFloat(order.total_amount) - parseFloat(order.coupon_discount || 0))).toLocaleString()}
-                {order.items.some(i => i.is_weight_pending) && <span className="text-primary text-xs ml-1">(+ TBD)</span>}
-              </span>
-              {parseFloat(order.coupon_discount || 0) > 0 && (
-                <div className="text-[11px] sm:text-xs text-emerald-600 font-medium mt-1">
-                  -Rs. {parseFloat(order.coupon_discount).toLocaleString()} (Coupon: {order.coupon_code || 'N/A'})
-                </div>
-              )}
-              <div className="flex items-center gap-1.5 sm:justify-end mt-1 flex-wrap">
-                <span className="text-[11px] sm:text-xs font-semibold text-blue-600 uppercase">{order.paymentMethod}</span>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                  order.paymentStatus === 'paid' ? 'bg-green-100 text-green-800 border border-green-300' :
-                  order.paymentStatus === 'partial' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
-                  order.paymentStatus === 'unpaid' ? 'bg-red-100 text-red-800 border border-red-300 animate-pulse' :
-                  'bg-yellow-100 text-yellow-800 border border-yellow-300'
-                }`}>
-                  {order.paymentStatus === 'paid' ? 'Paid' :
-                   order.paymentStatus === 'partial' ? 'Partial' :
-                   order.paymentStatus === 'unpaid' ? 'Unpaid / Rejected' : 'Pending'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </CardHeader>
-
-      <CardContent className="space-y-4 sm:space-y-5 px-3 sm:px-6">
-        {/* ETA & scheduling info card */}
-        <div className={`p-3 sm:p-4 rounded-lg border transition-colors ${
-          isOverdue
-            ? 'bg-red-50 border-red-300'
-            : 'bg-gradient-to-r from-emerald-50 to-teal-50 border-emerald-200'
-        }`}>
-          <div className="flex flex-col sm:grid sm:grid-cols-3 gap-2 sm:gap-3">
-            <div className="flex items-center justify-between sm:flex-col sm:text-center min-w-0">
-              <div className={`flex items-center gap-1 sm:justify-center sm:mb-1 ${isOverdue ? 'text-red-600' : 'text-emerald-600'}`}>
-                <Timer className="h-4 w-4 shrink-0" />
-                <span className="text-xs font-semibold uppercase">ETA</span>
-              </div>
-              <div className="text-right sm:text-center">
-                <p className={`text-base sm:text-lg font-bold break-words ${isOverdue ? 'text-red-700' : 'text-emerald-800'}`}>{formatETA(order.estimated_completion_time)}</p>
-                <p className={`text-xs font-bold ${isOverdue ? 'text-red-600' : 'text-emerald-600'}`}>{getTimeRemaining(order.estimated_completion_time)}</p>
-              </div>
-            </div>
-            <div className={`flex items-center justify-between sm:flex-col sm:text-center min-w-0 border-y sm:border-y-0 sm:border-x py-2 sm:py-0 ${isOverdue ? 'border-red-200' : 'border-emerald-200'}`}>
-              <div className={`flex items-center gap-1 sm:justify-center sm:mb-1 ${isOverdue ? 'text-red-600' : 'text-emerald-600'}`}>
-                <Weight className="h-4 w-4 shrink-0" />
-                <span className="text-xs font-semibold uppercase">Weight</span>
-              </div>
-              <div className="text-right sm:text-center">
-                <p className={`text-base sm:text-lg font-bold ${isOverdue ? 'text-red-700' : 'text-emerald-800'}`}>{parseFloat(order.total_weight_kg || 0).toFixed(1)} kg</p>
-                <p className={`text-xs ${isOverdue ? 'text-red-600' : 'text-emerald-600'}`}>{order.processing_time_minutes || Math.ceil(parseFloat(order.total_weight_kg || 1) * 2)} mins</p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between sm:flex-col sm:text-center min-w-0">
-              <div className={`flex items-center gap-1 sm:justify-center sm:mb-1 ${isOverdue ? 'text-red-600' : 'text-emerald-600'}`}>
-                <Package className="h-4 w-4 shrink-0" />
-                <span className="text-xs font-semibold uppercase">Queue</span>
-              </div>
-              <div className="text-right sm:text-center">
-                <p className={`text-base sm:text-lg font-bold ${isOverdue ? 'text-red-700' : 'text-emerald-800'}`}>#{order.queue_position || '-'}</p>
-                <p className={`text-xs ${isOverdue ? 'text-red-600' : 'text-emerald-600'}`}>Position</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Sibling Batch Status (only for split orders) */}
-        {isSplitBatch && order.siblings && order.siblings.length > 0 && (
-          <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <SplitSquareHorizontal className="h-4 w-4 text-purple-600" />
-              <span className="text-xs font-semibold text-purple-800 uppercase">Split Batches Status</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {order.siblings.map((sib) => (
-                <div
-                  key={sib.id}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border ${
-                    sib.status === 'ready'
-                      ? 'bg-green-100 text-green-800 border-green-300'
-                      : 'bg-slate-100 text-slate-600 border-slate-300'
-                  }`}
-                >
-                  {sib.status === 'ready'
-                    ? <CheckCircle className="h-3 w-3" />
-                    : <Clock className="h-3 w-3" />}
-                  Batch {sib.batch_index} #{sib.id}
-                  <span className="text-[10px] opacity-70">
-                    ({parseFloat(sib.total_weight_kg || 0).toFixed(1)}kg)
-                  </span>
-                  — {sib.assigned_date === new Date().toISOString().slice(0, 10) ? 'Today' : 'Tomorrow'}
-                </div>
-              ))}
-            </div>
-            {!allSiblingsReady && (
-              <p className="mt-2 text-xs text-purple-700 flex items-center gap-1">
-                <Lock className="h-3 w-3" />
-                Jab tak <strong>tamam batches ready</strong> nahi hote, Final Bill lock rahega. Ap is batch ko 'Process' kar sakte hain.
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* customer info */}
-        <div className="bg-muted/30 p-3 rounded-md space-y-2 text-sm">
-          <div className="flex items-center gap-2">
-            <User className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium">{order.customer_name}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Phone className="h-4 w-4 text-muted-foreground" />
-            <span>{order.customer_phone}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <MapPin className="h-4 w-4 text-muted-foreground" />
-            <span>{order.shipping_address}</span>
-          </div>
-          {order.driver_name && (
-            <div className="flex items-center gap-2">
-              <Truck className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm text-slate-700">Driver: {order.driver_name}</span>
-            </div>
-          )}
-        </div>
-
-        {/* order items */}
-        <div>
-          <h4 className="font-semibold mb-2 flex items-center gap-2 text-sm">
-            <Package className="h-4 w-4" /> Items to Prepare:
-          </h4>
-          <ul className="divide-y border rounded-md">
-            {order.items.map((item, idx) => (
-              <li key={idx} className="p-3 text-sm flex justify-between items-start bg-white hover:bg-slate-50 transition-colors">
-                <div className="flex-1 min-w-0 pr-4">
-                  <p className="font-bold text-slate-800 break-words">{item.name}</p>
-                  {/* Dynamic customizations display */}
-                  {(item.customizations?.length > 0 || item.is_cleaning || item.is_grinding) && (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {item.customizations?.length > 0 ? (
-                        item.customizations.map((cust, cIdx) => (
-                          <span key={cIdx} className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                            ✓ {cust.option_name}
-                          </span>
-                        ))
-                      ) : (
-                        <>
-                          {item.is_cleaning == 1 && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                              ✓ Cleaning
-                            </span>
-                          )}
-                          {item.is_grinding == 1 && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                              ✓ Grinding
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )}
-                  {item.is_weight_pending && (
-                    <p className="text-[10px] font-black text-primary mt-1 flex items-center gap-1 uppercase tracking-wider">
-                      <Timer className="h-3 w-3" /> Weight Pending
-                    </p>
-                  )}
-                </div>
-                <div className="flex flex-col items-end gap-1.5">
-                  <Badge variant="secondary" className="font-bold bg-slate-100 text-slate-700">x {item.quantity}</Badge>
-                  {item.unit && <span className="text-[10px] font-semibold text-muted-foreground uppercase">{item.unit}</span>}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {/* actions */}
-        <div className="pt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {canMarkReady ? (
-            <Button
-              className="w-full bg-green-600 hover:bg-green-700 shadow-md font-medium text-sm disabled:opacity-70"
-              onClick={() => markAsReady(order)}
-              disabled={sendingBill === order.id}
-            >
-              {sendingBill === order.id ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin shrink-0" /> Generating Bill...</>
-              ) : (
-                <><FileDown className="h-4 w-4 mr-2 shrink-0" /> Mark as Ready &amp; Send Bill</>
-              )}
-            </Button>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="w-full">
-                  <Button
-                    className="w-full shadow-md font-medium text-sm text-white hover:opacity-90"
-                    style={{ backgroundColor: '#4f46e5' }}
-                    onClick={() => markBatchProcessed(order)}
-                  >
-                    <CheckCircle className="h-4 w-4 mr-2 shrink-0" /> Mark Batch Processed
-                  </Button>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent className="text-xs max-w-[220px]">
-                <p>Is batch ko process karen. Final Bill aur Delivery tamam batches complete hone par hogi.</p>
-                <p className="mt-1">Remaining: {(order.siblings || []).filter(s => s.status !== 'ready' && s.status !== 'batch_ready').length} batch(es) pending</p>
-              </TooltipContent>
-            </Tooltip>
-          )}
-
-          {isHeavy && !isSplitBatch && (
-            <Button
-              variant="outline"
-              className="w-full border-2 border-purple-300 text-purple-700 bg-purple-50 hover:bg-purple-100 shadow-sm font-medium text-sm animate-pulse"
-              onClick={() => openSplitModal(order)}
-            >
-              <SplitSquareHorizontal className="h-4 w-4 mr-2 shrink-0" />
-              Split Order
-            </Button>
-          )}
-
-          <Button
-            variant="outline"
-            className="w-full border-2 border-orange-200 text-orange-700 hover:bg-orange-50 shadow-sm font-medium text-sm"
-            onClick={() => moveToTomorrow(order)}
-            disabled={overriding === order.id}
-          >
-            {overriding === order.id ? (
-              <><Loader2 className="h-4 w-4 mr-2 animate-spin shrink-0" /> Moving...</>
-            ) : (
-              <><CalendarClock className="h-4 w-4 mr-2 shrink-0" /> Push to Tomorrow</>
-            )}
-          </Button>
-
-          {order.type === 'delivery' ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" className={`w-full border-2 border-blue-200 text-blue-700 hover:bg-blue-50 shadow-sm font-medium text-sm ${order.deliveryPersonnel ? 'bg-blue-50' : ''}`}>
-                  <Truck className="h-4 w-4 mr-2 shrink-0" />
-                  {order.deliveryPersonnel ? `${order.deliveryPersonnel.slice(0, 10)}` : 'Driver'}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuLabel className="text-xs">Assign Driver</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {activePersonnel.length > 0 ? (
-                  activePersonnel.map(person => (
-                    <DropdownMenuItem key={person.id} onSelect={() => handleAssignPersonnel(order.id, person.name, person.phone)} className="cursor-pointer text-xs">
-                      <span>{person.name}</span>
-                    </DropdownMenuItem>
-                  ))
-                ) : (
-                  <DropdownMenuItem disabled className="text-xs">No active staff</DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => handleAssignPersonnel(order.id, '')} className="text-red-600 focus:text-red-600 focus:bg-red-50 cursor-pointer text-xs">
-                  Clear
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <Button variant="outline" disabled className="w-full border-2 border-slate-200 text-slate-500 opacity-60 cursor-default text-sm">
-              <Package className="h-4 w-4 mr-2 shrink-0" />
-              Self Pickup
-            </Button>
-          )}
-
-          <Button variant="outline" className="w-full border-2 border-blue-200 text-blue-700 hover:bg-blue-50 shadow-sm font-medium text-sm" onClick={() => handlePrint(order)}>
-            <Printer className="h-4 w-4 mr-2 shrink-0" /> Print
-          </Button>
-
-          <Button variant="destructive" className="w-full shadow-sm font-medium text-sm" onClick={() => setCancelOrder(order)}>
-            <Trash2 className="h-4 w-4 mr-2 text-white shrink-0" /> Cancel
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-    );
-  };
-
-  const PreparedOrderCard = ({ order }) => {
-    return (
-      <Card className="border-l-[6px] shadow-lg hover:shadow-xl transition-all border-t border-r border-b rounded-xl bg-white border-l-emerald-600">
-        <CardHeader className="pb-2 rounded-t-xl mb-3 sm:mb-4 px-3 sm:px-6 pt-3 sm:pt-6 bg-slate-50/50">
-          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
-            <div className="min-w-0">
-              <CardTitle className="text-lg sm:text-2xl font-bold flex items-center gap-2 flex-wrap">
-                Order #{order.id}
-                <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 text-[10px] px-2 py-0.5 font-bold uppercase">
-                  Prepared Item
-                </Badge>
-              </CardTitle>
-              <p className="text-xs sm:text-sm font-medium text-muted-foreground mt-1.5 sm:mt-2 flex items-center gap-2">
-                <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="break-words">Created: {new Date(order.created_at).toLocaleString()}</span>
-              </p>
-            </div>
-            <div className="sm:text-right bg-blue-50/80 px-3 py-2 rounded-lg self-stretch sm:self-auto">
-              <div className="flex flex-col items-start sm:items-end">
-                <span className="text-base sm:text-xl font-bold text-slate-800 break-all">
-                  Rs. {parseInt((parseFloat(order.total_amount) - parseFloat(order.coupon_discount || 0))).toLocaleString()}
-                </span>
-                {parseFloat(order.coupon_discount || 0) > 0 && (
-                  <div className="text-[11px] sm:text-xs text-emerald-600 font-medium mt-1">
-                    -Rs. {parseFloat(order.coupon_discount).toLocaleString()} (Coupon: {order.coupon_code || 'N/A'})
-                  </div>
-                )}
-                <div className="flex items-center gap-1.5 sm:justify-end mt-1 flex-wrap">
-                  <span className="text-[11px] sm:text-xs font-semibold text-blue-600 uppercase">{order.paymentMethod}</span>
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                    order.paymentStatus === 'paid' ? 'bg-green-100 text-green-800 border border-green-300' :
-                    order.paymentStatus === 'partial' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
-                    order.paymentStatus === 'unpaid' ? 'bg-red-100 text-red-800 border border-red-300 animate-pulse' :
-                    'bg-yellow-100 text-yellow-800 border border-yellow-300'
-                  }`}>
-                    {order.paymentStatus === 'paid' ? 'Paid' :
-                     order.paymentStatus === 'partial' ? 'Partial' :
-                     order.paymentStatus === 'unpaid' ? 'Unpaid / Rejected' : 'Pending'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardHeader>
-
-        <CardContent className="space-y-4 sm:space-y-5 px-3 sm:px-6">
-          <div className="bg-muted/30 p-3 rounded-md space-y-2 text-sm">
-            <div className="flex items-center gap-2">
-              <User className="h-4 w-4 text-muted-foreground" />
-              <span className="font-medium">{order.customer_name}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Phone className="h-4 w-4 text-muted-foreground" />
-              <span>{order.customer_phone}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <MapPin className="h-4 w-4 text-muted-foreground" />
-              <span>{order.shipping_address}</span>
-            </div>
-            {order.driver_name && (
-              <div className="flex items-center gap-2">
-                <Truck className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm text-slate-700">Driver: {order.driver_name}</span>
-              </div>
-            )}
-          </div>
-
-          <div>
-            <h4 className="font-semibold mb-2 flex items-center gap-2 text-sm">
-              <Package className="h-4 w-4" /> Prepared Items to Deliver:
-            </h4>
-            <ul className="divide-y border rounded-md">
-              {order.items.map((item, idx) => (
-                <li key={idx} className="p-3 text-sm flex justify-between items-start bg-white hover:bg-slate-50 transition-colors">
-                  <div className="flex-1 min-w-0 pr-4">
-                    <p className="font-bold text-slate-800 break-words">{item.name}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1.5">
-                    <Badge variant="secondary" className="font-bold bg-slate-100 text-slate-700">x {item.quantity}</Badge>
-                    {item.unit && <span className="text-[10px] font-semibold text-muted-foreground uppercase">{item.unit}</span>}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="pt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Button
-              className="w-full bg-green-600 hover:bg-green-700 shadow-md font-medium text-sm disabled:opacity-70"
-              onClick={() => markAsReady(order)}
-              disabled={sendingBill === order.id}
-            >
-              {sendingBill === order.id ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin shrink-0" /> Generating Bill...</>
-              ) : (
-                <><FileDown className="h-4 w-4 mr-2 shrink-0" /> Mark as Ready &amp; Send Bill</>
-              )}
-            </Button>
-
-            {order.type === 'delivery' ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" className={`w-full border-2 border-blue-200 text-blue-700 hover:bg-blue-50 shadow-sm font-medium text-sm ${order.deliveryPersonnel ? 'bg-blue-50' : ''}`}>
-                    <Truck className="h-4 w-4 mr-2 shrink-0" />
-                    {order.deliveryPersonnel ? `${order.deliveryPersonnel.slice(0, 10)}` : 'Driver'}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48">
-                  <DropdownMenuLabel className="text-xs">Assign Driver</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {activePersonnel.length > 0 ? (
-                    activePersonnel.map(person => (
-                      <DropdownMenuItem key={person.id} onSelect={() => handleAssignPersonnel(order.id, person.name, person.phone)} className="cursor-pointer text-xs">
-                        <span>{person.name}</span>
-                      </DropdownMenuItem>
-                    ))
-                  ) : (
-                    <DropdownMenuItem disabled className="text-xs">No active staff</DropdownMenuItem>
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={() => handleAssignPersonnel(order.id, '')} className="text-red-600 focus:text-red-600 focus:bg-red-50 cursor-pointer text-xs">
-                    Clear
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <Button variant="outline" disabled className="w-full border-2 border-slate-200 text-slate-500 opacity-60 cursor-default text-sm">
-                <Package className="h-4 w-4 mr-2 shrink-0" />
-                Self Pickup
-              </Button>
-            )}
-
-            <Button variant="outline" className="w-full border-2 border-blue-200 text-blue-700 hover:bg-blue-50 shadow-sm font-medium text-sm" onClick={() => handlePrint(order)}>
-              <Printer className="h-4 w-4 mr-2 shrink-0" /> Print
-            </Button>
-
-            <Button variant="destructive" className="w-full shadow-sm font-medium text-sm" onClick={() => setCancelOrder(order)}>
-              <Trash2 className="h-4 w-4 mr-2 text-white shrink-0" /> Cancel
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  };
-
-  if (loading) {
-    return <div className="p-8 text-center"><Loader2 className="animate-spin h-8 w-8 mx-auto text-primary" /></div>;
-  }
-
-  const carriedForwardOrders = processingOrders.filter(o => o.is_carried_forward);
-  const todayNewOrders = processingOrders.filter(o => !o.is_carried_forward);
-
   return (
     <TooltipProvider>
     <div className="space-y-4 sm:space-y-6">
       {/* header with quick stats */}
-      <div className="rounded-xl border border-gray-100 p-4 sm:p-6 shadow-sm" style={{ backgroundColor: '#ffffff' }}>
+      <div className="rounded-xl border border-gray-100 p-4 sm:p-6 shadow-sm bg-white">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3 sm:gap-4">
           <div className="min-w-0">
             <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-emerald-700 text-[10px] sm:text-xs font-semibold uppercase tracking-wide mb-2 sm:mb-3">
@@ -1389,15 +921,15 @@ Suchi Chakki — Pure & Fresh Processing
         </div>
 
         <div className="grid grid-cols-3 md:grid-cols-3 mt-4 sm:mt-6 gap-2 sm:gap-5">
-          <div className="rounded-xl border border-gray-200/70 p-3 sm:p-5 shadow-sm" style={{ backgroundColor: '#ffffff' }}>
+          <div className="rounded-xl border border-gray-200/70 p-3 sm:p-5 shadow-sm bg-white">
             <p className="text-[9px] sm:text-[11px] uppercase tracking-[0.08em] text-gray-500 font-bold mb-1 sm:mb-3">Total Weight</p>
             <p className="text-base sm:text-2xl font-black text-gray-900">{totalWeight.toFixed(1)} kg</p>
           </div>
-          <div className="rounded-xl border border-gray-200/70 p-3 sm:p-5 shadow-sm" style={{ backgroundColor: '#ffffff' }}>
+          <div className="rounded-xl border border-gray-200/70 p-3 sm:p-5 shadow-sm bg-white">
             <p className="text-[9px] sm:text-[11px] uppercase tracking-[0.08em] text-gray-500 font-bold mb-1 sm:mb-3">Workload</p>
             <p className="text-base sm:text-2xl font-black text-gray-900">{totalProcessingMinutes} mins</p>
           </div>
-          <div className="rounded-xl border border-gray-200/70 p-3 sm:p-5 shadow-sm" style={{ backgroundColor: '#ffffff' }}>
+          <div className="rounded-xl border border-gray-200/70 p-3 sm:p-5 shadow-sm bg-white">
             <p className="text-[9px] sm:text-[11px] uppercase tracking-[0.08em] text-gray-500 font-bold mb-1 sm:mb-3">Drivers</p>
             <p className="text-base sm:text-2xl font-black text-gray-900">{activeDrivers}</p>
           </div>
@@ -1406,7 +938,7 @@ Suchi Chakki — Pure & Fresh Processing
 
       {/* capacity utilization bar */}
       {capacity && (
-        <Card className="border-blue-200 rounded-xl" style={{ background: 'linear-gradient(135deg, #dbeafe, #e0e7ff)' }}>
+        <Card className="border-blue-200 rounded-xl bg-stat-blue">
           <CardContent className="py-3 sm:py-4 px-3 sm:px-6">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
               <div className="flex items-center gap-2">
@@ -1493,8 +1025,8 @@ Suchi Chakki — Pure & Fresh Processing
                       </span>
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                      {carriedForwardOrders.map((order) => (
-                        <OrderCard key={order.id} order={order} />
+                      {carriedForwardOrders.map((order, idx) => (
+                        <OrderProcessCard key={order.id} order={order} queueIndex={idx + 1} heavyThreshold={heavyThreshold} formatETA={formatETA} getTimeRemaining={getTimeRemaining} markAsReady={markAsReady} markBatchProcessed={markBatchProcessed} sendingBill={sendingBill} openSplitModal={openSplitModal} moveToTomorrow={moveToTomorrow} overriding={overriding} activePersonnel={activePersonnel} handleAssignPersonnel={handleAssignPersonnel} handlePrint={handlePrint} setCancelOrder={setCancelOrder} />
                       ))}
                     </div>
                   </>
@@ -1514,8 +1046,8 @@ Suchi Chakki — Pure & Fresh Processing
                       </span>
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                      {todayNewOrders.map((order) => (
-                        <OrderCard key={order.id} order={order} />
+                      {todayNewOrders.map((order, idx) => (
+                        <OrderProcessCard key={order.id} order={order} queueIndex={carriedForwardOrders.length + idx + 1} heavyThreshold={heavyThreshold} formatETA={formatETA} getTimeRemaining={getTimeRemaining} markAsReady={markAsReady} markBatchProcessed={markBatchProcessed} sendingBill={sendingBill} openSplitModal={openSplitModal} moveToTomorrow={moveToTomorrow} overriding={overriding} activePersonnel={activePersonnel} handleAssignPersonnel={handleAssignPersonnel} handlePrint={handlePrint} setCancelOrder={setCancelOrder} />
                       ))}
                     </div>
                   </>
@@ -1547,7 +1079,7 @@ Suchi Chakki — Pure & Fresh Processing
             ) : (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {preparedOrders.map((order) => (
-                  <PreparedOrderCard key={order.id} order={order} />
+                  <PreparedOrderCard key={order.id} order={order} sendingBill={sendingBill} markAsReady={markAsReady} activePersonnel={activePersonnel} handleAssignPersonnel={handleAssignPersonnel} handlePrint={handlePrint} setCancelOrder={setCancelOrder} />
                 ))}
               </div>
             )}
@@ -1562,261 +1094,12 @@ Suchi Chakki — Pure & Fresh Processing
         onClose={() => setPrintOrder(null)}
       />
 
-        <Dialog open={!!cancelOrder} onOpenChange={() => { setCancelOrder(null); setCancelReason(''); }}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-destructive text-base">
-                <AlertCircle className="h-5 w-5 text-destructive" />
-                Cancel Order #{cancelOrder?.id}
-              </DialogTitle>
-              <DialogDescription>
-                Are you sure you want to cancel this order? This action cannot be undone.
-              </DialogDescription>
-            </DialogHeader>
-            <Textarea
-              placeholder="Optional: Reason for cancellation..."
-              value={cancelReason}
-              onChange={(e) => setCancelReason(e.target.value)}
-              className="min-h-[100px] resize-none"
-            />
-            <DialogFooter className="flex flex-row gap-2">
-              <Button variant="outline" className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-300" onClick={() => { setCancelOrder(null); setCancelReason(''); }} disabled={isCancelling}>
-                Keep Order
-              </Button>
-              <Button
-                className="flex-1 bg-destructive hover:bg-destructive/90 text-white"
-                onClick={handleCancelOrder}
-                disabled={isCancelling}
-              >
-                {isCancelling ? <><Loader2 className="h-4 w-4 mr-1.5 animate-spin text-white" />Cancelling...</> : 'Yes, Cancel Order'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <CancelOrderModal cancelOrder={cancelOrder} setCancelOrder={setCancelOrder} cancelReason={cancelReason} setCancelReason={setCancelReason} handleCancelOrder={handleCancelOrder} isCancelling={isCancelling} />
 
-        {/* Split Order Modal */}
-        <Dialog open={!!splitOrder} onOpenChange={closeSplitModal}>
-        <DialogContent
-          className="max-w-md p-0 gap-0 [&>button]:top-5 [&>button]:right-5"
-        >
-          {/* Header */}
-          <div className="p-6 pb-3">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <SplitSquareHorizontal className="h-5 w-5 text-blue-600" />
-                Heavy Order Split — #{splitOrder?.id}
-              </DialogTitle>
-              <DialogDescription>
-                Order weight: <strong>{parseFloat(splitOrder?.total_weight_kg || 0).toFixed(1)} kg</strong>.
-                Split into multiple processing batches.
-              </DialogDescription>
-            </DialogHeader>
+      <SplitOrderModal splitOrder={splitOrder} closeSplitModal={closeSplitModal} splitBatches={splitBatches} setSplitBatches={setSplitBatches} handleSplitOrder={handleSplitOrder} isSplitting={isSplitting} />
 
-            {/* Warning Banner */}
-            <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 p-3 text-[11px] text-amber-800 mt-4">
-              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-              <p>
-                <strong>Note:</strong> Bill will be available only after <strong>all batches</strong> are completed.
-              </p>
-            </div>
-          </div>
-
-          {/* Scrollable Batches Area */}
-          <div className="px-6 py-2 overflow-y-auto" style={{ maxHeight: '45vh' }}>
-            <div className="space-y-3">
-              {splitBatches.map((batch, idx) => (
-                <div key={batch.id} className="relative bg-slate-50 p-4 rounded-xl border border-slate-200 transition-all hover:border-blue-300">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">
-                        {idx + 1}
-                      </span>
-                      <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">Batch Details</span>
-                    </div>
-                    
-                    {splitBatches.length > 2 && (
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        className="h-8 w-8 rounded-full text-red-500 hover:bg-red-50 hover:text-red-600"
-                        onClick={() => setSplitBatches(splitBatches.filter(b => b.id !== batch.id))}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <Label className="text-[10px] font-bold text-slate-500 uppercase">Date</Label>
-                      <div className="relative">
-                        <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
-                        <Input 
-                          type="date" 
-                          value={batch.date}
-                          className="pl-9 h-9 bg-white text-sm"
-                          onChange={(e) => {
-                            const newB = [...splitBatches];
-                            newB[idx].date = e.target.value;
-                            setSplitBatches(newB);
-                          }}
-                        />
-                      </div>
-                    </div>
-                    
-                    <div className="space-y-1">
-                      <Label className="text-[10px] font-bold text-slate-500 uppercase">Weight (kg)</Label>
-                      <div className="relative">
-                        <Weight className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
-                        <Input 
-                          type="number" 
-                          min="0.1" step="0.5" 
-                          value={batch.weight}
-                          className="pl-9 h-9 bg-white text-sm"
-                          onChange={(e) => {
-                            const newB = [...splitBatches];
-                            newB[idx].weight = e.target.value;
-                            setSplitBatches(newB);
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-4 pb-2">
-              <Button 
-                variant="outline" 
-                className="w-full border-dashed border-2 border-slate-300 text-slate-600 hover:border-blue-400 hover:text-blue-600 transition-all h-10"
-                onClick={() => {
-                  const lastDate = new Date(splitBatches[splitBatches.length - 1].date);
-                  lastDate.setDate(lastDate.getDate() + 1);
-                  setSplitBatches([...splitBatches, { 
-                    id: Date.now(), 
-                    date: lastDate.toISOString().slice(0, 10), 
-                    weight: '' 
-                  }]);
-                }}
-              >
-                <Package className="h-4 w-4 mr-2" /> Add Another Batch
-              </Button>
-            </div>
-          </div>
-
-          {/* Footer */}
-          <div className="p-6 pt-4 bg-slate-50/50 border-t">
-            {/* Live total check */}
-            {splitOrder && (() => {
-              const total = parseFloat(splitOrder.total_weight_kg || 0);
-              const sum = splitBatches.reduce((acc, curr) => acc + (parseFloat(curr.weight) || 0), 0);
-              const diff = Math.abs(sum - total);
-              const ok = diff <= 0.5;
-              return total > 0 ? (
-                <div className={`text-xs font-medium rounded px-3 py-2 mb-4 ${ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
-                  {ok
-                    ? `✅ Total: ${sum.toFixed(1)} kg — Valid!`
-                    : `⚠️ Total: ${sum.toFixed(1)} kg (Expected ~${total} kg) — Mismatch`}
-                </div>
-              ) : null;
-            })()}
-
-            <DialogFooter className="gap-2 sm:gap-2">
-              <Button variant="outline" onClick={closeSplitModal} disabled={isSplitting}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSplitOrder}
-                disabled={isSplitting}
-                className="bg-blue-600 hover:bg-blue-700 font-semibold"
-              >
-                {isSplitting ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Splitting...</>
-                ) : (
-                  <><SplitSquareHorizontal className="h-4 w-4 mr-2" /> Split Order</>
-                )}
-              </Button>
-            </DialogFooter>
-          </div>
-          </DialogContent>
-        </Dialog>
-
-        {/* WhatsApp Ready Confirmation Dialog */}
-        <Dialog open={!!whatsappReadyModal} onOpenChange={(open) => !open && setWhatsappReadyModal(null)}>
-          <DialogContent className="max-w-md w-[95vw] rounded-2xl p-0 overflow-hidden shadow-2xl border-emerald-100">
-            <div className="bg-gradient-to-r from-emerald-600 to-green-600 p-5 text-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center font-bold text-xl">
-                  📱
-                </div>
-                <div>
-                  <DialogTitle className="text-white text-lg font-bold">Order Ready & Bill Generated!</DialogTitle>
-                  <DialogDescription className="text-emerald-100 text-xs">
-                    Order #{whatsappReadyModal?.order?.id} marked as ready
-                  </DialogDescription>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-5 space-y-4">
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-sm space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground text-xs font-medium">Customer:</span>
-                  <span className="font-semibold text-slate-800">{whatsappReadyModal?.customerName}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground text-xs font-medium">WhatsApp Number:</span>
-                  <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded text-xs">
-                    {whatsappReadyModal?.phone || 'No phone provided'}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center border-t border-slate-200/60 pt-1.5 mt-1.5">
-                  <span className="text-muted-foreground text-xs font-medium">PDF Bill:</span>
-                  <span className="text-xs text-slate-600 font-medium">Downloaded to device ✓</span>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2.5 pt-1">
-                <Button
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-11 shadow-md shadow-emerald-600/20 text-sm flex items-center justify-center gap-2"
-                  onClick={() => {
-                    if (whatsappReadyModal?.url) {
-                      openWhatsAppSafely(whatsappReadyModal.url);
-                    }
-                  }}
-                >
-                  <span className="text-base">📲</span> Open WhatsApp (کسٹمر کو بھیجیں)
-                </Button>
-
-                <Button
-                  variant="outline"
-                  className="w-full font-medium h-10 border-slate-200 hover:bg-slate-50 text-xs flex items-center justify-center gap-2"
-                  onClick={() => {
-                    if (whatsappReadyModal?.rawMessage) {
-                      navigator.clipboard.writeText(whatsappReadyModal.rawMessage);
-                      toast.success('📋 Message copied to clipboard!');
-                    }
-                  }}
-                >
-                  <span>📋</span> Copy Message Text
-                </Button>
-              </div>
-            </div>
-
-            <DialogFooter className="p-4 bg-slate-50/50 border-t flex justify-end">
-              <Button variant="ghost" size="sm" onClick={() => setWhatsappReadyModal(null)}>
-                Close
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
+      <WhatsAppReadyModal whatsappReadyModal={whatsappReadyModal} setWhatsappReadyModal={setWhatsappReadyModal} openWhatsAppSafely={openWhatsAppSafely} />
     </div>
     </TooltipProvider>
   );
 }
-
-
-
-

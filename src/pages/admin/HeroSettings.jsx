@@ -38,7 +38,7 @@ export function HeroSettings() {
             setSlides([]);
           }
         } else {
-          // Default fallback if nothing in DB
+          // agar db me kuch na ho to default slides
           setSlides([
             {
               image: "https://images.unsplash.com/photo-1731082300550-8093311708ef?w=1400&auto=format&fit=crop&q=80",
@@ -98,7 +98,7 @@ export function HeroSettings() {
     try {
       setSaving(true);
       
-      // Ensure all slides have data
+      // khali slides ko filter karna
       const validSlides = slides.filter(s => s.image || s.title || s.subtitle);
       const validStorySlides = storySlides.filter(s => s && s.trim() !== '');
       
@@ -281,7 +281,7 @@ export function HeroSettings() {
             </div>
 
             {/* FULL WIDTH HERO PREVIEW — exact same look as Homepage */}
-            <div className="w-full rounded-lg overflow-hidden relative mb-4 sm:mb-8" style={{ aspectRatio: '16/9' }}>
+            <div className="w-full rounded-lg overflow-hidden relative mb-4 sm:mb-8 aspect-video">
               {slide.image ? (
                 <img
                   src={slide.image}
@@ -407,7 +407,7 @@ export function HeroSettings() {
               <div className="flex flex-col md:flex-row gap-4 sm:gap-8 items-center md:items-start">
                 {/* Preview */}
                 <div className="w-full max-w-[200px] sm:max-w-[240px] flex-shrink-0">
-                  <div className="relative w-full rounded-[1.5rem] sm:rounded-[2rem] shadow-xl -rotate-1 overflow-hidden border-4 border-white group" style={{ aspectRatio: '4/3' }}>
+                  <div className="relative w-full rounded-[1.5rem] sm:rounded-[2rem] shadow-xl -rotate-1 overflow-hidden border-4 border-white group aspect-[4/3]">
                     {slide ? (
                       <img
                         src={slide}

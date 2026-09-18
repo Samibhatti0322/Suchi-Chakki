@@ -6,6 +6,10 @@ import { Button } from '../../components/common/button';
 import { Input } from '../../components/common/input';
 import { Label } from '../../components/common/label';
 import { Card } from '../../components/common/card';
+import { OrderStatusBadge } from '../../components/shared/OrderStatusBadge';
+import { CancelOrderModal } from '../../components/shared/CancelOrderModal';
+import { useCancelOrder } from '../../hooks/useCancelOrder';
+import { formatPKR } from '../../lib/formatters';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/common/tabs';
 import {
   AlertDialog,
@@ -44,8 +48,19 @@ export function UserAccount() {
   const [tempProfile, setTempProfile] = useState(profile);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [cancelOrder, setCancelOrder] = useState(null);
-  const [cancelReason, setCancelReason] = useState('');
+  const {
+    cancelOrder,
+    setCancelOrder,
+    cancelReason,
+    setCancelReason,
+    isCancelling,
+    handleCancelOrder,
+  } = useCancelOrder({
+    onSuccess: () => fetchOrders(),
+    cancelledBy: 'User',
+    enforceDateGuard: true,
+    t,
+  });
   const [isSaving, setIsSaving] = useState(false); // New loading state for saving
   const [rentals, setRentals] = useState([]);
   const [loadingRentals, setLoadingRentals] = useState(true);
@@ -148,7 +163,9 @@ export function UserAccount() {
             paymentStatus: paymentStatus,
             deliveryAddress: shippingAddr,
             type: isPickup ? 'pickup' : 'delivery',
-            items: itemsList
+            items: itemsList,
+            isSplit: Boolean(order.is_split),
+            batches: Array.isArray(order.batches) ? order.batches : []
           };
         }).filter(Boolean);
         setOrders(mappedOrders);
@@ -404,17 +421,6 @@ export function UserAccount() {
     }
   };
 
-  const getStatusColor = (status) => {
-    const s = String(status || '').toLowerCase();
-    switch (s) {
-      case 'completed': return 'bg-green-100 text-green-800';
-      case 'ready': return 'bg-orange-100 text-orange-800';
-      case 'cancelled': return 'bg-red-100 text-red-800';
-      case 'processing': return 'bg-blue-100 text-blue-800';
-      default: return 'bg-yellow-100 text-yellow-800';
-    }
-  };
-
   const getRentalStatusColor = (status) => {
     const s = String(status || '').toLowerCase();
     switch (s) {
@@ -434,43 +440,6 @@ export function UserAccount() {
       case 'forfeited': return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400';
       case 'held':
       default: return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400';
-    }
-  };
-
-  const handleCancelOrder = async () => {
-    if (!cancelOrder) return;
-
-    // Direct frontend check: block cancellation if order is assigned to today's date or earlier
-    const todayStr = new Date().toISOString().split('T')[0];
-    if (cancelOrder.assignedDate && cancelOrder.assignedDate <= todayStr) {
-      toast.error(t('Processing has started, it cannot be cancelled now / پروسیسنگ شروع ہو چکی ہے، اب آرڈر کینسل نہیں کیا جا سکتا۔'));
-      setCancelOrder(null);
-      setCancelReason('');
-      return;
-    }
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/cancel_order.php`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            order_id: cancelOrder.id,
-            reason: cancelReason,
-            cancelled_by: 'User'
-          })
-      });
-      const result = await response.json();
-      if (result.success) {
-        toast.success(t('Order cancelled successfully'));
-        fetchOrders(); 
-      } else {
-        toast.error(result.message || t('Failed to cancel order'));
-      }
-    } catch (e) {
-      toast.error(t('Network error while cancelling'));
-    } finally {
-      setCancelOrder(null); 
-      setCancelReason('');
     }
   };
 
@@ -516,8 +485,7 @@ export function UserAccount() {
                   <button
                     type="button"
                     onClick={handleEdit}
-                    className="inline-flex items-center justify-center h-10 px-5 rounded-xl text-sm font-semibold text-white shadow-sm hover:shadow-md transition-all duration-200"
-                    style={{ background: 'linear-gradient(135deg, #8b6f47 0%, #a0845c 100%)' }}
+                    className="inline-flex items-center justify-center h-10 px-5 rounded-xl text-sm font-semibold text-white shadow-sm hover:shadow-md transition-all duration-200 bg-brand-gradient"
                   >
                     <Edit className="h-4 w-4 mr-2 text-white" />
                     {t('Edit Details')}
@@ -647,7 +615,7 @@ export function UserAccount() {
             </Card>
 
             {/* Security & Password Card */}
-            <Card className="p-6 mt-6 border-l-4" style={{ borderLeftColor: '#8b6f47' }}>
+            <Card className="p-6 mt-6 border-l-4 border-l-brand">
               <div className="flex items-center gap-3 mb-6">
                 <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400">
                   <ShieldCheck className="h-6 w-6" />
@@ -704,8 +672,7 @@ export function UserAccount() {
                         type="button"
                         onClick={handleVerifyCurrentPassword}
                         disabled={isVerifyingPassword || !currentPassword.trim()}
-                        style={{ background: 'linear-gradient(135deg, #8b6f47 0%, #a0845c 100%)' }}
-                        className="text-white shrink-0 shadow-sm hover:shadow-md transition-all duration-200"
+                        className="bg-brand-gradient text-white shrink-0 shadow-sm hover:shadow-md transition-all duration-200"
                       >
                         {isVerifyingPassword ? (
                           <>
@@ -845,9 +812,7 @@ export function UserAccount() {
                       <div>
                         <div className="flex items-center gap-3 mb-2">
                           <h3 className="text-foreground">{t('Order ID')}: {order.id}</h3>
-                          <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(order.status)}`}>
-                            {statusStr}
-                          </span>
+                          <OrderStatusBadge status={order.status} t={t} />
                         </div>
                         {order.status === 'cancelled' && order.cancelReason && (
                           <p className="text-sm text-red-600 font-medium mt-1">
@@ -881,7 +846,7 @@ export function UserAccount() {
                       <div className="text-left sm:text-right">
                         <p className="text-sm text-muted-foreground">{t('Total Amount')}</p>
                         <p className="text-primary font-bold">
-                          Rs. {totalAmount.toLocaleString()}
+                          {formatPKR(totalAmount)}
                           {hasPending && <span className="text-xs ml-1">(+ TBD)</span>}
                         </p>
                       </div>
@@ -903,7 +868,7 @@ export function UserAccount() {
                                 {item?.isWeightPending ? (
                                   <span className="text-primary font-medium">{t('Pending Wt.')}</span>
                                 ) : (
-                                  `Rs. ${(itemPrice * itemQty).toLocaleString()}`
+                                  formatPKR(itemPrice * itemQty)
                                 )}
                               </span>
                             </div>
@@ -911,6 +876,44 @@ export function UserAccount() {
                         })}
                       </div>
                     </div>
+
+                    {order.isSplit && order.batches && order.batches.length > 0 && (
+                      <div className="border-t border-border pt-4 mt-4">
+                        <div className="p-3 rounded-lg bg-purple-50/70 border border-purple-200">
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <span className="text-xs font-semibold text-purple-900 flex items-center gap-1.5">
+                              <Package className="h-3.5 w-3.5 text-purple-600" />
+                              {t('Processing in Batches')} ({order.batches.length} {t('Parts')})
+                            </span>
+                            <span className="text-[11px] text-purple-700 font-medium">
+                              {order.batches.filter(b => ['ready', 'batch_ready', 'completed', 'delivered'].includes(String(b.status).toLowerCase())).length} / {order.batches.length} {t('Completed')}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {order.batches.map((batch, bIdx) => {
+                              const isDone = ['ready', 'batch_ready', 'completed', 'delivered'].includes(String(batch.status).toLowerCase());
+                              return (
+                                <div
+                                  key={batch.id || bIdx}
+                                  className={`flex items-center justify-between p-2 rounded text-xs border ${
+                                    isDone ? 'bg-green-50 border-green-200 text-green-900' : 'bg-white border-purple-200 text-slate-700'
+                                  }`}
+                                >
+                                  <span className="font-medium">
+                                    {t('Batch')} {batch.batch_index || (bIdx + 1)} ({parseFloat(batch.total_weight_kg || 0)} kg)
+                                  </span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    isDone ? 'bg-green-200 text-green-800' : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    {isDone ? t('Ready') : t('In Progress')}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {order.type === 'delivery' && (
                       <div className="border-t border-border pt-4 mt-4">
@@ -939,7 +942,7 @@ export function UserAccount() {
                           </span>
                           {amountPaid > 0 && order.paymentStatus !== 'paid' && (
                             <p className="text-xs text-green-600 mt-0.5">
-                              {t('Paid:')} Rs. {amountPaid.toLocaleString()}
+                              {t('Paid:')} {formatPKR(amountPaid)}
                             </p>
                           )}
                         </div>
@@ -1195,31 +1198,20 @@ export function UserAccount() {
         </Tabs>
       </div>
 
-      <AlertDialog open={!!cancelOrder} onOpenChange={() => { setCancelOrder(null); setCancelReason(''); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('Are you sure?')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t('Are you sure you want to cancel this order? This action cannot be undone.')}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <Textarea
-            placeholder={t("Optional: Tell us why you're cancelling...")}
-            value={cancelReason}
-            onChange={(e) => setCancelReason(e.target.value)}
-            className="mt-2"
-          />
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('No, Keep Order')}</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive hover:bg-destructive/90"
-              onClick={handleCancelOrder}
-            >
-              {t('Yes, Cancel My Order')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <CancelOrderModal
+        cancelOrder={cancelOrder}
+        setCancelOrder={setCancelOrder}
+        cancelReason={cancelReason}
+        setCancelReason={setCancelReason}
+        handleCancelOrder={handleCancelOrder}
+        isCancelling={isCancelling}
+        title={t('Are you sure?')}
+        description={t('Are you sure you want to cancel this order? This action cannot be undone.')}
+        placeholder={t("Optional: Tell us why you're cancelling...")}
+        cancelText={t('No, Keep Order')}
+        confirmText={t('Yes, Cancel My Order')}
+        t={t}
+      />
     </div>
   );
 }
